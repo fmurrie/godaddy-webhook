@@ -11,7 +11,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func TestExtractAPITokenFromSecretRejectsMalformedToken(t *testing.T) {
+func TestExtractPATFromSecretRejectsEmptyToken(t *testing.T) {
 	t.Parallel()
 
 	solver := &godaddyDNSSolver{
@@ -20,7 +20,7 @@ func TestExtractAPITokenFromSecretRejectsMalformedToken(t *testing.T) {
 				Name:      "godaddy-credentials",
 				Namespace: "cert-manager",
 			},
-			Data: map[string][]byte{"token": []byte("missing-separator")},
+			Data: map[string][]byte{"token": []byte(" \n\t ")},
 		}),
 	}
 	cfg := &godaddyDNSProviderConfig{
@@ -30,15 +30,15 @@ func TestExtractAPITokenFromSecretRejectsMalformedToken(t *testing.T) {
 		},
 	}
 
-	err := solver.extractApiTokenFromSecret(cfg, &v1alpha1.ChallengeRequest{
+	err := solver.extractPATFromSecret(cfg, &v1alpha1.ChallengeRequest{
 		ResourceNamespace: "cert-manager",
 	})
-	if err == nil || !strings.Contains(err.Error(), "must contain a non-empty GoDaddy API key") {
+	if err == nil || !strings.Contains(err.Error(), "must contain a non-empty GoDaddy personal access token") {
 		t.Fatalf("expected malformed token error, got %v", err)
 	}
 }
 
-func TestExtractAPITokenFromSecretPreservesColonInSecret(t *testing.T) {
+func TestExtractPATFromSecretTrimsWhitespace(t *testing.T) {
 	t.Parallel()
 
 	solver := &godaddyDNSSolver{
@@ -47,7 +47,7 @@ func TestExtractAPITokenFromSecretPreservesColonInSecret(t *testing.T) {
 				Name:      "godaddy-credentials",
 				Namespace: "cert-manager",
 			},
-			Data: map[string][]byte{"token": []byte("api-key:api-secret:with-colon")},
+			Data: map[string][]byte{"token": []byte("  godaddy-pat-value  \n")},
 		}),
 	}
 	cfg := &godaddyDNSProviderConfig{
@@ -57,13 +57,13 @@ func TestExtractAPITokenFromSecretPreservesColonInSecret(t *testing.T) {
 		},
 	}
 
-	if err := solver.extractApiTokenFromSecret(cfg, &v1alpha1.ChallengeRequest{
+	if err := solver.extractPATFromSecret(cfg, &v1alpha1.ChallengeRequest{
 		ResourceNamespace: "cert-manager",
 	}); err != nil {
 		t.Fatalf("extract API token: %v", err)
 	}
 
-	if cfg.AuthAPIKey != "api-key" || cfg.AuthAPISecret != "api-secret:with-colon" {
-		t.Fatalf("unexpected parsed credential components")
+	if cfg.AuthToken != "godaddy-pat-value" {
+		t.Fatalf("unexpected personal access token")
 	}
 }

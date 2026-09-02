@@ -124,9 +124,8 @@ type godaddyDNSProviderConfig struct {
 
 	APIKeySecretRef certmgrv1.SecretKeySelector `json:"apiKeySecretRef"`
 
-	AuthAPIKey    string `json:"authApiKey"`
-	AuthAPISecret string `json:"authApiSecret"`
-	Production    bool   `json:"production"`
+	AuthToken  string `json:"-"`
+	Production bool   `json:"production"`
 
 	// +optional. The TTL of the TXT record used for the DNS challenge
 	TTL int `json:"ttl"`
@@ -141,7 +140,7 @@ type godaddyDNSProviderConfig struct {
 }
 
 func (c *godaddyDNSSolver) validate(cfg *godaddyDNSProviderConfig) error {
-	// Try to load the API key
+	// Try to load the personal access token reference.
 	if cfg.APIKeySecretRef.LocalObjectReference.Name == "" {
 		return errors.New("API token field were not provided as no Kubernetes Secret exists !")
 	}
@@ -170,7 +169,7 @@ func (c *godaddyDNSSolver) apiURL(cfg *godaddyDNSProviderConfig) string {
 	return baseURL
 }
 
-func (c *godaddyDNSSolver) extractApiTokenFromSecret(cfg *godaddyDNSProviderConfig, ch *v1alpha1.ChallengeRequest) error {
+func (c *godaddyDNSSolver) extractPATFromSecret(cfg *godaddyDNSProviderConfig, ch *v1alpha1.ChallengeRequest) error {
 	sec, err := c.client.CoreV1().
 		Secrets(ch.ResourceNamespace).
 		Get(context.TODO(), cfg.APIKeySecretRef.LocalObjectReference.Name, metaV1.GetOptions{})
@@ -186,16 +185,15 @@ func (c *godaddyDNSSolver) extractApiTokenFromSecret(cfg *godaddyDNSProviderConf
 			ch.ResourceNamespace)
 	}
 
-	token := strings.SplitN(string(secBytes), ":", 2)
-	if len(token) != 2 || token[0] == "" || token[1] == "" {
-		return fmt.Errorf("Key %q in secret \"%s/%s\" must contain a non-empty GoDaddy API key and secret separated by one colon",
+	token := strings.TrimSpace(string(secBytes))
+	if token == "" {
+		return fmt.Errorf("Key %q in secret \"%s/%s\" must contain a non-empty GoDaddy personal access token",
 			cfg.APIKeySecretRef.Key,
 			cfg.APIKeySecretRef.LocalObjectReference.Name,
 			ch.ResourceNamespace)
 	}
 
-	cfg.AuthAPIKey = token[0]
-	cfg.AuthAPISecret = token[1]
+	cfg.AuthToken = token
 
 	return nil
 }
@@ -216,9 +214,8 @@ func (c *godaddyDNSSolver) Present(ch *v1alpha1.ChallengeRequest) error {
 		return err
 	}
 
-	// Extract the Godaddy Api and Secret from the K8s Secret
-	// and assign it the AuthAPIKey and AuthAPISecret of the Config
-	if err := c.extractApiTokenFromSecret(cfg, ch); err != nil {
+	// Extract the GoDaddy personal access token from the Kubernetes Secret.
+	if err := c.extractPATFromSecret(cfg, ch); err != nil {
 		return err
 	}
 
@@ -277,9 +274,8 @@ func (c *godaddyDNSSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
 		return err
 	}
 
-	// Extract the Godaddy Api and Secret from the K8s Secret
-	// and assign it the AuthAPIKey and AuthAPISecret of the Config
-	if err := c.extractApiTokenFromSecret(cfg, ch); err != nil {
+	// Extract the GoDaddy personal access token from the Kubernetes Secret.
+	if err := c.extractPATFromSecret(cfg, ch); err != nil {
 		return err
 	}
 
@@ -289,7 +285,7 @@ func (c *godaddyDNSSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
 		return err
 	}
 
-	logrus.Infof("### CleanUp should delete the relevant TXT record for the challengeKey: %s", ch.Key)
+	logrus.Info("cleaning up the ACME DNS-01 TXT record")
 	present, err := c.HasTXTRecord(cfg, dnsZone, recordName, ch.Key)
 	if err != nil {
 		return fmt.Errorf("### Unable to check TXT record: %s", err)
@@ -341,7 +337,7 @@ func loadConfig(cfgJSON *apiext.JSON) (*godaddyDNSProviderConfig, error) {
 }
 
 func (c *godaddyDNSSolver) HasTXTRecord(cfg *godaddyDNSProviderConfig, domainZone string, recordName string, challengeKey string) (bool, error) {
-	// curl -X GET -H "Authorization: sso-key $TOKEN"
+	// curl -X GET -H "Authorization: Bearer $TOKEN"
 	// "https://api.godaddy.com/v1/domains/<DOMAIN>/records/TXT/<NAME>"
 	url := fmt.Sprintf("/v1/domains/%s/records/TXT/%s", domainZone, recordName)
 	logrus.Debug("checking for an existing GoDaddy TXT record")
@@ -370,11 +366,11 @@ func (c *godaddyDNSSolver) HasTXTRecord(cfg *godaddyDNSProviderConfig, domainZon
 			for _, dnsRecord := range dnsRecords {
 				logrus.Infof("### TXT Record collected from godaddy: %#v", dnsRecord)
 				if dnsRecord.Data == challengeKey {
-					logrus.Infof("### TXT Record found : %#v, for challengeKey: %s", dnsRecord, challengeKey)
+					logrus.Info("matching ACME DNS-01 TXT record found")
 					return true, nil
 				}
 			}
-			logrus.Infof("### No TXT Record found within the response for challengeKey: %s", challengeKey)
+			logrus.Info("no matching ACME DNS-01 TXT record found")
 			return false, nil
 		}
 	} else {
@@ -444,7 +440,7 @@ func (c *godaddyDNSSolver) makeRequest(cfg *godaddyDNSProviderConfig, method str
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", CertManagerUserAgent)
-	req.Header.Set("Authorization", fmt.Sprintf("sso-key %s:%s", cfg.AuthAPIKey, cfg.AuthAPISecret))
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", cfg.AuthToken))
 
 	logrus.Debugf("### Godaddy HTTP request: %s", req.URL.String())
 

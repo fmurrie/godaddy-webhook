@@ -29,7 +29,7 @@ solverName: godaddy
 ```
 
 The GoDaddy API token is stored only in an encrypted SOPS secret in the
-platform repository. It has the form `<api-key>:<api-secret>` and must never
+platform repository. It is a single GoDaddy Personal Access Token (PAT) and must never
 be committed, logged, copied to test fixtures, or passed as a command-line
 argument. DNS-01 lets Let's Encrypt validate `*.apps.ownsuall.com` without
 exposing the cluster on the public Internet.
