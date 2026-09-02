@@ -50,6 +50,7 @@ var (
 
 // DNSRecord a DNS record
 type DNSRecord struct {
+	ID       string `json:"recordId,omitempty"`
 	Type     string `json:"type"`
 	Name     string `json:"name"`
 	Data     string `json:"data"`
@@ -293,7 +294,7 @@ func (c *godaddyDNSSolver) CleanUp(ch *v1alpha1.ChallengeRequest) error {
 
 	if present {
 		logrus.Infof("### Deleting entry=%s, domain=%s", recordName, dnsZone)
-		err := c.DeleteTxtRecord(cfg, dnsZone, recordName)
+		err := c.DeleteTxtRecord(cfg, dnsZone, recordName, ch.Key)
 		if err != nil {
 			return fmt.Errorf("### Unable to delete the TXT record: %v", err)
 		}
@@ -339,7 +340,7 @@ func loadConfig(cfgJSON *apiext.JSON) (*godaddyDNSProviderConfig, error) {
 func (c *godaddyDNSSolver) HasTXTRecord(cfg *godaddyDNSProviderConfig, domainZone string, recordName string, challengeKey string) (bool, error) {
 	// curl -X GET -H "Authorization: Bearer $TOKEN"
 	// "https://api.godaddy.com/v1/domains/<DOMAIN>/records/TXT/<NAME>"
-	url := fmt.Sprintf("/v1/domains/%s/records/TXT/%s", domainZone, recordName)
+	url := fmt.Sprintf("/v3/domains/zones/%s/dns-records?type=TXT&name=%s", domainZone, recordName)
 	logrus.Debug("checking for an existing GoDaddy TXT record")
 	logrus.Infof("### URL request issued to check if the TXT DNS record is present: %s", url)
 
@@ -353,17 +354,19 @@ func (c *godaddyDNSSolver) HasTXTRecord(cfg *godaddyDNSProviderConfig, domainZon
 	if resp.StatusCode == http.StatusNotFound {
 		return false, nil
 	} else if resp.StatusCode == http.StatusOK {
-		var dnsRecords = []DNSRecord{}
-		err = json.NewDecoder(resp.Body).Decode(&dnsRecords)
+		var response struct {
+			Items []DNSRecord `json:"items"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&response)
 		if err != nil {
 			return false, fmt.Errorf("### HTTP response body cannot be parsed to JSON: %s", err)
 		}
 
-		if len(dnsRecords) == 0 {
+		if len(response.Items) == 0 {
 			logrus.Info("### No TXT Record found using godaddy REST API !")
 			return false, nil
 		} else {
-			for _, dnsRecord := range dnsRecords {
+			for _, dnsRecord := range response.Items {
 				logrus.Infof("### TXT Record collected from godaddy: %#v", dnsRecord)
 				if dnsRecord.Data == challengeKey {
 					logrus.Info("matching ACME DNS-01 TXT record found")
@@ -384,13 +387,13 @@ func (c *godaddyDNSSolver) HasTXTRecord(cfg *godaddyDNSProviderConfig, domainZon
 // Godaddy uses an array of DNS records as input !
 // See: https://developer.godaddy.com/doc/endpoint/domains#/v1/recordReplaceType
 func (c *godaddyDNSSolver) UpdateRecords(cfg *godaddyDNSProviderConfig, records []DNSRecord, domainZone string, recordName string) error {
-	body, err := json.Marshal(records)
+	body, err := json.Marshal(records[0])
 	if err != nil {
 		return err
 	}
 
 	var resp *http.Response
-	url := fmt.Sprintf("/v1/domains/%s/records/TXT/%s", domainZone, recordName)
+	url := fmt.Sprintf("/v3/domains/zones/%s/dns-records", domainZone)
 	logrus.Infof("### URL request issued to create/update the DNS record: %s", url)
 	logrus.Debugf("updating %d GoDaddy TXT record(s)", len(records))
 	resp, err = c.makeRequest(cfg, http.MethodPut, url, bytes.NewReader(body))
@@ -400,7 +403,7 @@ func (c *godaddyDNSSolver) UpdateRecords(cfg *godaddyDNSProviderConfig, records 
 
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		bodyBytes, _ := ioutil.ReadAll(resp.Body)
 		return fmt.Errorf("### Could not create record %v; Status: %v; Body: %s", string(body), resp.StatusCode, string(bodyBytes))
 	} else {
@@ -411,22 +414,49 @@ func (c *godaddyDNSSolver) UpdateRecords(cfg *godaddyDNSProviderConfig, records 
 
 // Function to be used to delete a TXT record
 // See: https://developer.godaddy.com/doc/endpoint/domains#/v1/recordDeleteTypeName
-func (c *godaddyDNSSolver) DeleteTxtRecord(cfg *godaddyDNSProviderConfig, domainZone string, recordName string) error {
-	var resp *http.Response
-	url := fmt.Sprintf("/v1/domains/%s/records/TXT/%s", domainZone, recordName)
-	logrus.Infof("### URL request issued to delete the DNS record: %s", url)
-
-	resp, err := c.makeRequest(cfg, http.MethodDelete, url, nil)
+func (c *godaddyDNSSolver) DeleteTxtRecord(cfg *godaddyDNSProviderConfig, domainZone string, recordName string, challengeKey string) error {
+	url := fmt.Sprintf("/v3/domains/zones/%s/dns-records?type=TXT&name=%s", domainZone, recordName)
+	resp, err := c.makeRequest(cfg, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("### Failed deleting TXT record: %v, status of the response: %d", err, resp.StatusCode)
+	var response struct {
+		Items []DNSRecord `json:"items"`
 	}
-	logrus.Infof("### TXT Record deleted using Godaddy REST API")
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return err
+	}
+	for _, record := range response.Items {
+		if record.Data != challengeKey {
+			continue
+		}
+		resp, err = c.makeRequest(cfg, http.MethodDelete, fmt.Sprintf("/v3/domains/zones/%s/dns-records/%s", domainZone, record.ID), nil)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			return fmt.Errorf("failed deleting TXT record: status %d", resp.StatusCode)
+		}
+	}
 	return nil
+	/*
+		var resp *http.Response
+		url := fmt.Sprintf("/v1/domains/%s/records/TXT/%s", domainZone, recordName)
+		logrus.Infof("### URL request issued to delete the DNS record: %s", url)
+
+		resp, err := c.makeRequest(cfg, http.MethodDelete, url, nil)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+			return fmt.Errorf("### Failed deleting TXT record: %v, status of the response: %d", err, resp.StatusCode)
+		}
+		logrus.Infof("### TXT Record deleted using Godaddy REST API")
+		return nil */
 }
 
 func (c *godaddyDNSSolver) makeRequest(cfg *godaddyDNSProviderConfig, method string, uri string, body io.Reader) (*http.Response, error) {
