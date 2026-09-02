@@ -1,6 +1,6 @@
-VERSION        ?= 0.0.666
-IMAGE_NAME     := "quay.io/snowdrop/cert-manager-webhook-godaddy"
-IMAGE_TAG      := "latest"
+VERSION        ?= 0.1.0
+IMAGE_NAME     ?= ghcr.io/fmurrie/godaddy-webhook
+IMAGE_TAG      ?= dev
 TEST_ZONE_NAME ?= example.com.
 
 OUT := $(shell pwd)/_out
@@ -13,17 +13,21 @@ clean:
 	rm -rf apiserver.local.config
 
 install-tools:
-	sh ./scripts/fetch-test-binaries.sh
+	bash ./scripts/fetch-test-binaries.sh
 
-verify: clean install-tools
-	go test -v .
+verify: test
 
-test: clean install-tools
+test: ## Run unit tests without external DNS credentials.
+	go test ./...
+
+test-conformance: clean install-tools ## Run DNS provider conformance tests with dedicated test credentials.
+	@test -n "$(TEST_ZONE_NAME)" || { echo "ERROR: set TEST_ZONE_NAME" >&2; exit 2; }
+	@test -n "$(GODADDY_TEST_TOKEN)" || { echo "ERROR: set GODADDY_TEST_TOKEN" >&2; exit 2; }
 	TEST_ASSET_ETCD=$(OUT)/kubebuilder/bin/etcd \
 	TEST_ASSET_KUBECTL=$(OUT)/kubebuilder/bin/kubectl \
 	TEST_ASSET_KUBE_APISERVER=$(OUT)/kubebuilder/bin/kube-apiserver \
 	TEST_ZONE_NAME=$(TEST_ZONE_NAME) \
-	TEST_DNS_SERVER=$(TEST_DNS_SERVER) go test .
+	TEST_DNS_SERVER=$(TEST_DNS_SERVER) GODADDY_TEST_TOKEN=$(GODADDY_TEST_TOKEN) go test -tags=integration .
 
 compile:
 	echo "### Go mod vendor ..."

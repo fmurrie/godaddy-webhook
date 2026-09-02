@@ -1,0 +1,7 @@
+.git
+.github
+_out
+bin
+*.test
+webhook
+testdata/godaddy/secret.yaml

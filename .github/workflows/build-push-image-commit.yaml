@@ -1,28 +1,55 @@
-name: Build and push godaddy webhook image
+name: Verify and publish webhook image
+
 on:
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
   push:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
-  build_push_image:
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Build & push Docker image
-        uses: mr-smithers-excellent/docker-build-push@v6
+        uses: actions/checkout@v5
+      - name: Set up Go
+        uses: actions/setup-go@v6
         with:
-          image: snowdrop/cert-manager-webhook-godaddy
-          addLatest: true
-          enableBuildKit: true
-          platform: linux/amd64
-          registry: quay.io
-          username: ${{ secrets.QUAY_ROBOT_USER }}
-          password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+          go-version-file: go.mod
+      - name: Run unit tests
+        run: make test
+
+  publish:
+    if: github.event_name == 'push'
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish immutable image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/fmurrie/godaddy-webhook:sha-${{ github.sha }}
+          labels: org.opencontainers.image.revision=${{ github.sha }}

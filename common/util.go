@@ -11,7 +11,7 @@ func GetValFromEnVar(envVar string) (val string) {
 		logrus.Debugf("%s not set", envVar)
 		return ""
 	} else {
-		logrus.Debugf("%s=%s", envVar, val)
+		logrus.Debugf("%s is configured", envVar)
 		return val
 	}
 }

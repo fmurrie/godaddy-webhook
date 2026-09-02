@@ -1,58 +1,36 @@
 #!/usr/bin/env bash
 
-set -e
+set -Eeuo pipefail
 
-k8s_version=1.29.1
-goarch=$(go env GOARCH)
-goos="unknown"
+k8s_version="1.36.0"
+# Pinned upstream setup-envtest revision for controller-runtime v0.24.
+controller_runtime_version="d3eaef3ab45410342c30528d1eaab982137c4d5a"
+goos="$(go env GOOS)"
+goarch="$(go env GOARCH)"
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+output_root="${OUTPUT_ROOT:-"$repo_root/_out"}"
+if [[ "$output_root" != /* ]]; then
+  output_root="$repo_root/$output_root"
+fi
+tool_root="$output_root/tools"
+asset_root="$output_root/kubebuilder"
+setup_envtest="$tool_root/setup-envtest"
 
-if [[ "$OSTYPE" == "linux-gnu" ]]; then
-  goos="linux"
-elif [[ "$OSTYPE" == "darwin"* ]]; then
-  goos="darwin"
+mkdir -p "$tool_root" "$asset_root/bin"
+
+if [[ ! -x "$setup_envtest" ]]; then
+  GOBIN="$tool_root" go install \
+    "sigs.k8s.io/controller-runtime/tools/setup-envtest@${controller_runtime_version}"
 fi
 
-if [[ "$goos" == "unknown" ]]; then
-  echo "OS '$OSTYPE' not supported. Aborting." >&2
-  exit 1
-fi
+assets_path="$($setup_envtest use "$k8s_version" --bin-dir "$asset_root" -p path)"
+for binary_name in etcd kubectl kube-apiserver; do
+  [[ -x "$assets_path/$binary_name" ]] || {
+    printf 'ERROR: envtest asset is missing: %s\n' "$assets_path/$binary_name" >&2
+    exit 1
+  }
+  ln -sfn "$assets_path/$binary_name" "$asset_root/bin/$binary_name"
+done
 
-tmp_root=./_out
-kb_root_dir=$tmp_root/kubebuilder
-
-# Turn colors in this script off by setting the NO_COLOR variable in your
-# environment to any value:
-#
-# $ NO_COLOR=1 test.sh
-NO_COLOR=${NO_COLOR:-""}
-if [ -z "$NO_COLOR" ]; then
-  header=$'\e[1;33m'
-  reset=$'\e[0m'
-else
-  header=''
-  reset=''
-fi
-
-function header_text {
-  echo "$header$*$reset"
-}
-
-# fetch k8s API gen tools and make it available under kb_root_dir/bin.
-function fetch_kb_tools {
-  header_text "fetching tools"
-  mkdir -p $tmp_root
-  kb_tools_archive_name="kubebuilder-tools-$k8s_version-$goos-$goarch.tar.gz"
-  kb_tools_download_url="https://storage.googleapis.com/kubebuilder-tools/$kb_tools_archive_name"
-  echo "URL: $kb_tools_download_url"
-
-  kb_tools_archive_path="$tmp_root/$kb_tools_archive_name"
-  if [ ! -f $kb_tools_archive_path ]; then
-    curl -sL ${kb_tools_download_url} -o "$kb_tools_archive_path"
-  fi
-  tar -zvxf "$kb_tools_archive_path" -C "$tmp_root/"
-}
-
-fetch_kb_tools
-
-header_text "kubebuilder v$k8s_version tools (etcd, kubectl, kube-apiserver) used to perform local tests. It has been installed: $tmp_root/kubebuilder/bin/"
-exit 0
+printf 'Installed Kubernetes %s envtest assets for %s/%s at %s\n' \
+  "$k8s_version" "$goos" "$goarch" "$asset_root/bin"

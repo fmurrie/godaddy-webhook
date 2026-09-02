@@ -17,7 +17,7 @@ import (
 	"github.com/cert-manager/cert-manager/pkg/acme/webhook/cmd"
 	"github.com/cert-manager/cert-manager/pkg/issuer/acme/dns/util"
 	useragent "github.com/cert-manager/cert-manager/pkg/util"
-	"github.com/snowdrop/godaddy-webhook/logging"
+	"github.com/fmurrie/godaddy-webhook/logging"
 
 	logrus "github.com/sirupsen/logrus"
 	apiext "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -100,7 +100,7 @@ func main() {
 // To do so, it must implement the `github.com/cert-manager/cert-manager/pkg/acme/webhook.Solver`
 // interface.
 type godaddyDNSSolver struct {
-	client *kubernetes.Clientset
+	client kubernetes.Interface
 	cfg    *godaddyDNSProviderConfig
 }
 
@@ -186,7 +186,14 @@ func (c *godaddyDNSSolver) extractApiTokenFromSecret(cfg *godaddyDNSProviderConf
 			ch.ResourceNamespace)
 	}
 
-	token := strings.Split(string(secBytes), ":")
+	token := strings.SplitN(string(secBytes), ":", 2)
+	if len(token) != 2 || token[0] == "" || token[1] == "" {
+		return fmt.Errorf("Key %q in secret \"%s/%s\" must contain a non-empty GoDaddy API key and secret separated by one colon",
+			cfg.APIKeySecretRef.Key,
+			cfg.APIKeySecretRef.LocalObjectReference.Name,
+			ch.ResourceNamespace)
+	}
+
 	cfg.AuthAPIKey = token[0]
 	cfg.AuthAPISecret = token[1]
 
@@ -223,7 +230,7 @@ func (c *godaddyDNSSolver) Present(ch *v1alpha1.ChallengeRequest) error {
 		return err
 	}
 
-	logrus.Infof("### Try to present the DNS record with the DNS provider using as challengeKey: %s", ch.Key)
+	logrus.Info("presenting the ACME DNS-01 TXT record")
 	_, err = c.HasTXTRecord(cfg, dnsZone, recordName, ch.Key)
 	if err != nil {
 		return fmt.Errorf("Unable to check the TXT record: %v", err)
@@ -337,7 +344,7 @@ func (c *godaddyDNSSolver) HasTXTRecord(cfg *godaddyDNSProviderConfig, domainZon
 	// curl -X GET -H "Authorization: sso-key $TOKEN"
 	// "https://api.godaddy.com/v1/domains/<DOMAIN>/records/TXT/<NAME>"
 	url := fmt.Sprintf("/v1/domains/%s/records/TXT/%s", domainZone, recordName)
-	logrus.Debugf("### Godaddy Api: %s, Secret: %s keys", cfg.AuthAPIKey, cfg.AuthAPISecret)
+	logrus.Debug("checking for an existing GoDaddy TXT record")
 	logrus.Infof("### URL request issued to check if the TXT DNS record is present: %s", url)
 
 	resp, err := c.makeRequest(cfg, http.MethodGet, url, nil)
@@ -345,7 +352,7 @@ func (c *godaddyDNSSolver) HasTXTRecord(cfg *godaddyDNSProviderConfig, domainZon
 		logrus.Infof("### HTTP request failed with Godaddy: %s", err)
 		return false, err
 	}
-	logrus.Debugf("### Godaddy HTTP body response: %s", resp.Body)
+	logrus.Debugf("GoDaddy TXT record lookup completed with status %s", resp.Status)
 
 	if resp.StatusCode == http.StatusNotFound {
 		return false, nil
@@ -389,7 +396,7 @@ func (c *godaddyDNSSolver) UpdateRecords(cfg *godaddyDNSProviderConfig, records 
 	var resp *http.Response
 	url := fmt.Sprintf("/v1/domains/%s/records/TXT/%s", domainZone, recordName)
 	logrus.Infof("### URL request issued to create/update the DNS record: %s", url)
-	logrus.Debugf("### DNS record(s): %s", body)
+	logrus.Debugf("updating %d GoDaddy TXT record(s)", len(records))
 	resp, err = c.makeRequest(cfg, http.MethodPut, url, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -440,7 +447,6 @@ func (c *godaddyDNSSolver) makeRequest(cfg *godaddyDNSProviderConfig, method str
 	req.Header.Set("Authorization", fmt.Sprintf("sso-key %s:%s", cfg.AuthAPIKey, cfg.AuthAPISecret))
 
 	logrus.Debugf("### Godaddy HTTP request: %s", req.URL.String())
-	logrus.Debugf("### Header authorisation: %s", req.Header.Get("Authorization"))
 
 	client := http.Client{
 		Timeout: 30 * time.Second,
