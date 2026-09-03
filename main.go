@@ -383,9 +383,8 @@ func (c *godaddyDNSSolver) HasTXTRecord(cfg *godaddyDNSProviderConfig, domainZon
 	return false, nil
 }
 
-// Function to be used to create/update a TXT record
-// Godaddy uses an array of DNS records as input !
-// See: https://developer.godaddy.com/doc/endpoint/domains#/v1/recordReplaceType
+// UpdateRecords creates a DNS-01 TXT record in a GoDaddy v3 zone.
+// The v3 endpoint accepts one record per POST request.
 func (c *godaddyDNSSolver) UpdateRecords(cfg *godaddyDNSProviderConfig, records []DNSRecord, domainZone string, recordName string) error {
 	body, err := json.Marshal(records[0])
 	if err != nil {
@@ -396,7 +395,7 @@ func (c *godaddyDNSSolver) UpdateRecords(cfg *godaddyDNSProviderConfig, records 
 	url := fmt.Sprintf("/v3/domains/zones/%s/dns-records", domainZone)
 	logrus.Infof("### URL request issued to create/update the DNS record: %s", url)
 	logrus.Debugf("updating %d GoDaddy TXT record(s)", len(records))
-	resp, err = c.makeRequest(cfg, http.MethodPut, url, bytes.NewReader(body))
+	resp, err = c.makeRequest(cfg, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

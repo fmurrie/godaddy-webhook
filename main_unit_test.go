@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -10,6 +12,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestExtractPATFromSecretRejectsEmptyToken(t *testing.T) {
 	t.Parallel()
@@ -65,5 +73,40 @@ func TestExtractPATFromSecretTrimsWhitespace(t *testing.T) {
 
 	if cfg.AuthToken != "godaddy-pat-value" {
 		t.Fatalf("unexpected personal access token")
+	}
+}
+
+func TestUpdateRecordsCreatesTXTRecordWithPOST(t *testing.T) {
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+	http.DefaultTransport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", req.Method)
+		}
+		if req.URL.String() != "https://api.godaddy.com/v3/domains/zones/ownsuall.com/dns-records" {
+			t.Fatalf("unexpected request URL: %s", req.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusCreated,
+			Status:     "201 Created",
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	})
+
+	solver := &godaddyDNSSolver{}
+	err := solver.UpdateRecords(&godaddyDNSProviderConfig{
+		AuthToken:  "test-token",
+		Production: true,
+	}, []DNSRecord{{
+		Type: "TXT",
+		Name: "_acme-challenge",
+		Data: "challenge-value",
+		TTL:  600,
+	}}, "ownsuall.com", "_acme-challenge")
+	if err != nil {
+		t.Fatalf("create TXT record: %v", err)
 	}
 }
