@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -87,6 +88,13 @@ func TestUpdateRecordsCreatesTXTRecordWithPOST(t *testing.T) {
 		if req.URL.String() != "https://api.godaddy.com/v3/domains/zones/ownsuall.com/dns-records" {
 			t.Fatalf("unexpected request URL: %s", req.URL)
 		}
+		var record DNSRecord
+		if err := json.NewDecoder(req.Body).Decode(&record); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		if record.TTL != DefaultTXTRecordTTL {
+			t.Fatalf("expected default TTL %d, got %d", DefaultTXTRecordTTL, record.TTL)
+		}
 		return &http.Response{
 			StatusCode: http.StatusCreated,
 			Status:     "201 Created",
@@ -104,7 +112,7 @@ func TestUpdateRecordsCreatesTXTRecordWithPOST(t *testing.T) {
 		Type: "TXT",
 		Name: "_acme-challenge",
 		Data: "challenge-value",
-		TTL:  600,
+		TTL:  0,
 	}}, "ownsuall.com", "_acme-challenge")
 	if err != nil {
 		t.Fatalf("create TXT record: %v", err)

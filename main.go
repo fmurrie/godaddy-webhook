@@ -34,6 +34,8 @@ const (
 	DefaultLevel        = "info"
 	DefaultLogTimestamp = false
 	DefaultLogFormat    = "color"
+	DefaultTXTRecordTTL = 600
+	MaxTXTRecordTTL     = 86400
 
 	LOGGING_LEVEL_ENV_NAME     = "LOGGING_LEVEL"
 	LOGGING_FORMAT_ENV_NAME    = "LOGGING_FORMAT"
@@ -229,9 +231,13 @@ func (c *godaddyDNSSolver) Present(ch *v1alpha1.ChallengeRequest) error {
 	}
 
 	logrus.Info("presenting the ACME DNS-01 TXT record")
-	_, err = c.HasTXTRecord(cfg, dnsZone, recordName, ch.Key)
+	present, err := c.HasTXTRecord(cfg, dnsZone, recordName, ch.Key)
 	if err != nil {
 		return fmt.Errorf("Unable to check the TXT record: %v", err)
+	}
+	if present {
+		logrus.Info("matching ACME DNS-01 TXT record is already present")
+		return nil
 	}
 
 	rec := []DNSRecord{{
@@ -386,7 +392,19 @@ func (c *godaddyDNSSolver) HasTXTRecord(cfg *godaddyDNSProviderConfig, domainZon
 // UpdateRecords creates a DNS-01 TXT record in a GoDaddy v3 zone.
 // The v3 endpoint accepts one record per POST request.
 func (c *godaddyDNSSolver) UpdateRecords(cfg *godaddyDNSProviderConfig, records []DNSRecord, domainZone string, recordName string) error {
-	body, err := json.Marshal(records[0])
+	if len(records) != 1 {
+		return fmt.Errorf("expected exactly one DNS record, got %d", len(records))
+	}
+
+	record := records[0]
+	if record.TTL == 0 {
+		record.TTL = DefaultTXTRecordTTL
+	}
+	if record.TTL < DefaultTXTRecordTTL || record.TTL > MaxTXTRecordTTL {
+		return fmt.Errorf("TXT record TTL must be between %d and %d seconds", DefaultTXTRecordTTL, MaxTXTRecordTTL)
+	}
+
+	body, err := json.Marshal(record)
 	if err != nil {
 		return err
 	}
